@@ -1,0 +1,5 @@
+novels/*
+!novels/.gitkeep
+.vscode/*
+chroma_db/*
+runs/*
