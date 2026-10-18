@@ -1,385 +1,243 @@
-"""第三步：多角色回合制互动小说引擎（导演 + 旁白模式）。
-
-循环逻辑：
-    选一个角色 → 组装提示词（人物卡 + 剧情摘要 + 最近正文）
-    → 模型先以「旁白」推进剧情（时间/场景/新事件），再让指定角色以第三人称反应
-    → 追加进正文 manuscript → 判断下一个角色 → 回到开头。
-
-角色配置写在 story_state.json（只读，运行中不会被改动）。每次运行会新建一个
-按日期时间命名的目录 runs/YYYYMMDD_HHMMSS/，里面放：
-    state.json     本次运行的进度（正文 / 摘要 / 当前角色）
-    manuscript.txt 小说正文（可直接读）
-
-用法：
-    python 3_story.py
-
-命令：
-    （回车）           继续下一段（下一角色由模型决定）
-    /next 名字         强制指定下一个出场角色
-    /scene 描述        以「旁白」身份插入外部事件（你当主持人推进剧情）
-    /characters        查看人物卡
-    /manuscript        查看当前完整正文
-    /save              保存（每轮自动保存，并导出 manuscript.txt）
-    /exit              退出
-"""
+"""三场短篇：规划、整场写作、审核修改、更新事实。标准库即可运行。"""
+import argparse
 import datetime
 import json
 import os
-import re
-
+from pathlib import Path
+import urllib.request
 import config
-from langchain_ollama import ChatOllama
 
-# ================= 路径 =================
-_BASE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(_BASE, "story_state.json")   # 角色配置（只读，永不改动）
-RUNS_DIR = os.path.join(_BASE, "runs")                  # 每次运行一个时间戳子目录
-
-# ================= 正文 / 上下文参数 =================
-RECENT_CHARS = 2000       # 每次喂给模型的「最近正文」字符数
-SUMMARIZE_AT_CHARS = 7000 # 未压缩正文超过此长度时触发压缩（正文本身不删）
-
-# ================= 提示词 =================
-DIRECTOR_SYSTEM = """你是一部互动小说的导演兼旁白。每轮你要做两件事：
-1) 以「旁白」身份推进剧情——时间的流逝、场景的转换、新的突发事件、或角色间暗流的变化，让故事往前走，绝不停在原地复读；
-2) 再让指定角色「X」对这一新局面做出反应——只写 X 这一个人的动作、神态与对话。
-
-硬性规则：
-1. 全程第三人称叙述（一律用角色名，禁止「我」「你」这种第一/第二人称）。
-2. 只输出一个 JSON 对象，不要任何多余文字，格式：
-   {"narrator":"旁白：推进剧情的一两句话","character":"当前角色名","text":"该角色第三人称的动作与对话","next":"下一个出场角色名"}
-3. character 必须是本轮指定的角色；next 只能是【可选角色】里列出的名字，严禁引入新角色。
-4. 角色名必须与人物卡一字不差，不要写错字、不要夹英文或拼音。
-5. text 只写 character 这一个人，150~250 字，贴合其性格、目标与人际关系。
-6. narrator 是剧情推进器，必须让故事「往前跳一步」，至少做到其一：
-   - 时间明确前进（如「第二天一早」「半小时后」「放学铃响」）；
-   - 场景切换（如「众人转场到图书馆」「门被推开」）；
-   - 出现新事件或新信息（电话/消息/意外/有人闯入/某个角色抛出新提议）。
-   若最近剧情还停在原地，narrator 要主动制造转折。禁止写「空气安静了」「众人沉默」「一时无言」这类不推进的静态句子。
-7. next 不能等于 character，别让同一角色连续出场两次。"""
-
-SUMMARY_SYSTEM = """把下面【既有摘要】和【新增正文】合并成一段连贯的第三人称小说叙事。
-要求：按时间顺序复述关键情节，保留重要对话的要点、人物的关键行动、伏笔与悬念，
-文笔流畅、读起来像小说正文（而不是简介或分点提纲），篇幅可到 500~800 字。只输出正文。"""
+BASE = Path(__file__).resolve().parent
+CARD_KEYS = ('title', 'viewpoint', 'task', 'obstacle', 'conflict', 'change', 'end_condition')
+PLAN_SYSTEM = '''你是短篇小说编辑。根据人物和已发生的开场规划恰好三场，第三场必须完结。
+聚焦一个核心矛盾，其余人物目标成为支线或阻力。每场用行动、选择、后果推进，换地点不算推进。
+开场已经发生，不重写。只输出JSON：
+{"direction":"核心矛盾","ending":"具体结局",
+"initial_memory":{"facts":["开场事实"],"relationships":["关系现状"],"unresolved":["未解决事项"]},
+"scenes":[{"title":"场名","viewpoint":"现有人物名","task":"当前任务","obstacle":"阻碍",
+"conflict":"实际冲突","change":"必须发生的变化","end_condition":"可验证的结束条件"}]}。
+结局回应核心矛盾并交代支线，不另开悬念。计划不能写成已经发生的事实。'''
+WRITE_SYSTEM = '''你是小说作者，续接已有正文，按当前场景卡写一场完整的戏，约800至1200中文字。
+采用指定视角的第三人称有限叙述。对白自然使用我和你，允许多人互动，不按角色轮换切段。
+用动作、对白、选择与后果写戏，不堆突发事件，不反复解释人物标签。不复述开场。
+遵守既定事实，不提前获知他人内心。保留轻喜剧语气，不羞辱失落中的人物。
+场景卡是计划而非历史，目标未完成不能假装完成。
+末场必须兑现结局，交代投稿、部费、田径场约定的结果，自然收束。
+如有修改意见，改写当前场完整正文。只输出正文，不输出标题、分析或JSON。'''
+REVIEW_SYSTEM = '''你是严格的小说编辑。检查草稿是否以行动实现本场变化和结束条件，是否违背既定事实
+或人物动机，是否有清楚的因果衔接。严重问题拒绝并给可执行修改意见，措辞偏好不构成拒绝。
+末场必须完成结局、交代支线，不能只承诺稍后解决。
+通过时从已接受历史加本场提取更新后的完整记忆，只收录正文事实，不能把计划当事实。
+末场通过时unresolved必须为空。只输出JSON：
+{"approved":true或false,"issues":["问题与修改方式"],
+"evidence":{"change":"变化的具体行动","end_condition":"结束条件如何达成",
+"continuity":"与已定事实的衔接","closure":"末场结局与支线结果，其他场的后续原因"},
+"memory":{"facts":["事实"],"relationships":["关系变化"],"unresolved":["未解决事项"]}}。'''
 
 
-def _default_config():
-    return {
-        "title": "雨夜凶宅",
-        "characters": [
-            {"name": "林岚", "persona": "冷静理性的私家侦探，说话简短克制，观察力极强", "goal": "找出真凶"},
-            {"name": "陈默", "persona": "话多冲动的记者，爱抢话、爱煽动气氛", "goal": "抢到独家新闻"},
-            {"name": "沈薇", "persona": "阴郁沉默的富家女，似乎藏着不可告人的秘密", "goal": "隐瞒某个真相"},
-        ],
-        "opening": "暴雨夜，山中别墅突然断电。主人沈薇点起蜡烛，冷眼扫过在座的每一个人——他们当中，有人半小时前杀死了管家。",
-    }
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
-def load_config():
-    """读取角色配置（只读）。文件不存在时才生成示例，绝不覆盖已有配置。"""
-    if not os.path.exists(CONFIG_FILE):
-        cfg = _default_config()
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-        print(f"✨ 首次运行，已生成示例角色配置文件：{CONFIG_FILE}\n   直接编辑它换人物/开场（该文件运行中不会被改动）。")
-        return cfg
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def write_text(path, text):
+    path = Path(path)
+    temp = path.with_suffix(path.suffix + '.tmp')
+    temp.write_text(text, encoding='utf-8')
+    os.replace(temp, path)
 
 
-def opening_text(cfg):
-    """取开场正文：优先 opening，其次兼容旧版的 manuscript 字段。"""
-    return (cfg.get("opening") or cfg.get("manuscript") or "").strip()
+def write_json(path, data):
+    write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
-def new_run_dir():
-    """为本次运行创建一个按日期时间命名的输出目录（同秒冲突时加序号）。"""
-    os.makedirs(RUNS_DIR, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    d = os.path.join(RUNS_DIR, stamp)
-    n = 2
-    while os.path.exists(d):
-        d = os.path.join(RUNS_DIR, f"{stamp}_{n}")
-        n += 1
-    os.makedirs(d)
-    return d
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
 
 
-def init_run(cfg):
-    """基于配置初始化本次运行的状态（不碰配置文件）。"""
-    run_dir = new_run_dir()
-    chars = cfg.get("characters") or []
-    state = {
-        "title": cfg.get("title", "未命名"),
-        "characters": chars,
-        "manuscript": opening_text(cfg),
-        "summary": "",
-        "summarized_len": 0,
-        "current": chars[0]["name"] if chars else "",
-    }
-    return run_dir, state
+def nonempty(value):
+    return isinstance(value, str) and bool(value.strip())
 
 
-def save_state(state, run_dir):
-    """保存本次运行进度到 runs/<时间戳>/，并把正文导出为 manuscript.txt。"""
-    with open(os.path.join(run_dir, "state.json"), "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    title = state.get("title", "未命名")
-    with open(os.path.join(run_dir, "manuscript.txt"), "w", encoding="utf-8") as f:
-        f.write(f"《{title}》\n\n" + state.get("manuscript", ""))
+def validate_memory(memory):
+    require(isinstance(memory, dict), '记忆必须是对象')
+    for key in ('facts', 'relationships', 'unresolved'):
+        require(isinstance(memory.get(key), list) and all(nonempty(x) for x in memory[key]),
+                f'记忆 {key} 必须是字符串数组')
 
 
-def extract_json(raw):
-    """从模型输出里稳健地抠出 JSON 对象（兼容代码围栏、前后废话、嵌套引号）。"""
-    if not raw:
-        return None
-    raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-    m = re.search(r"```(?:json)?\s*(.*?)```", raw, re.S)
-    if m:
-        try:
-            return json.loads(m.group(1).strip())
-        except Exception:
-            pass
-    start = raw.find("{")
-    if start == -1:
-        return None
-    depth, in_str, esc = 0, False, False
-    for i in range(start, len(raw)):
-        c = raw[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
+def validate_plan(plan, characters):
+    require(isinstance(plan, dict), '规划必须是对象')
+    require(nonempty(plan.get('direction')) and nonempty(plan.get('ending')), '缺少方向或结局')
+    validate_memory(plan.get('initial_memory'))
+    cards = plan.get('scenes')
+    require(isinstance(cards, list) and len(cards) == 3, '必须恰好三场')
+    for card in cards:
+        require(isinstance(card, dict) and all(nonempty(card.get(k)) for k in CARD_KEYS), '场景卡不完整')
+        require(card['viewpoint'] in {c['name'] for c in characters}, '视角必须来自现有人物')
+
+
+def validate_review(review, final):
+    require(isinstance(review, dict) and type(review.get('approved')) is bool, 'approved必须是布尔值')
+    issues = review.get('issues')
+    require(isinstance(issues, list) and all(nonempty(x) for x in issues), 'issues格式错误')
+    if review['approved']:
+        require(not issues, '有待修改问题不能通过')
+        evidence = review.get('evidence')
+        require(isinstance(evidence, dict) and all(nonempty(evidence.get(k)) for k in
+                ('change', 'end_condition', 'continuity', 'closure')), '通过审核必须提供依据')
+        validate_memory(review.get('memory'))
+        require(not final or not review['memory']['unresolved'], '末场仍有未解决事项')
+    else:
+        require(bool(issues), '拒绝必须提供修改意见')
+
+
+class Ollama:
+    def __init__(self, model, base_url, timeout):
+        self.model, self.base_url, self.timeout = model, base_url.rstrip('/'), timeout
+
+    def complete(self, stage, system, context, structured=False):
+        payload = {'model': self.model, 'stream': False, 'think': False,
+                   'messages': [{'role': 'system', 'content': system},
+                                {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}],
+                   'options': {'num_ctx': config.STORY_NUM_CTX, 'temperature': 0.25 if structured else config.LLM_TEMPERATURE,
+                               'num_predict': 4096}}
+        if structured:
+            payload['format'] = 'json'
+        request = urllib.request.Request(self.base_url + '/api/chat', data=json.dumps(payload).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            text = json.load(response)['message']['content'].strip()
+        require(bool(text), f'{stage}返回空内容')
+        return text
+
+
+class Replay:
+    """离线样稿回放，不代表真实模型生成或审核。"""
+    def __init__(self, path):
+        self.data = read_json(path)
+
+    def complete(self, stage, system, context, structured=False):
+        if stage == 'plan':
+            result = self.data['plan']
         else:
-            if c == '"':
-                in_str = True
-            elif c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(raw[start:i + 1])
-                    except Exception:
-                        return None
-    return None
+            scene = self.data['scenes'][context['scene_number'] - 1]
+            result = scene['text'] if stage == 'write' else scene['review']
+        return json.dumps(result, ensure_ascii=False) if structured else result
 
 
-def names(state):
-    return [c["name"] for c in state["characters"]]
-
-
-def fallback_next(state, current):
-    ns = names(state)
-    if current in ns:
-        return ns[(ns.index(current) + 1) % len(ns)]
-    return ns[0]
-
-
-def persona_lines(state):
-    return "\n".join(
-        f"- {c['name']}：{c.get('persona', '')}（目标：{c.get('goal', '')}）"
-        for c in state["characters"]
-    )
-
-
-def recent_manuscript(state):
-    """取「最近正文」：从上次压缩点之后的内容里截最后 RECENT_CHARS 字。"""
-    man = state.get("manuscript", "")
-    summarized = state.get("summarized_len", 0)
-    return man[summarized:][-RECENT_CHARS:]
-
-
-def build_llm(format_json=False, repeat_penalty=None):
-    """构造对话模型。format_json=True 时让 Ollama 强制输出 JSON（旧版不支持则回退）。"""
-    kwargs = dict(
-        model=config.LLM_MODEL,
-        base_url=config.OLLAMA_BASE_URL,
-        temperature=config.LLM_TEMPERATURE,
-        num_ctx=config.LLM_NUM_CTX,
-    )
-    if repeat_penalty is not None:
-        kwargs["repeat_penalty"] = repeat_penalty
-        kwargs["repeat_last_n"] = 256
-    if format_json:
+def ask(client, folder, label, stage, system, context, structured, validator):
+    label += '_' + datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    for attempt in range(2):
+        raw = client.complete(stage, system, context, structured)
+        write_text(folder / f'{label}_raw_{attempt + 1}.txt', raw)
         try:
-            return ChatOllama(format="json", **kwargs)
-        except TypeError:
-            pass
-    return ChatOllama(**kwargs)
+            value = json.loads(raw) if structured else raw
+            validator(value)
+            return value
+        except (ValueError, TypeError) as exc:
+            if attempt:
+                raise
+            context = dict(context, format_error=str(exc), previous_response=raw)
+            print(f'  格式不合格，重试一次：{exc}', flush=True)
 
 
-def generate_turn(state, speaker, llm):
-    """让模型写出「旁白推进 + speaker 反应」这一段，返回 (dict, raw)；失败返回 (None, raw)。"""
-    ns = names(state)
-    prompt = f"""【人物卡】
-{persona_lines(state)}
-
-【可选角色（next 只能从中选）】：{'、'.join(ns)}
-
-【剧情摘要】
-{state.get('summary') or '（无）'}
-
-【最近正文】
-{recent_manuscript(state)}
-
-现在请推进剧情，并让「{speaker}」做出反应。只输出 JSON。"""
-    messages = [("system", DIRECTOR_SYSTEM), ("human", prompt)]
-    try:
-        raw = llm.invoke(messages).content
-    except Exception as e:
-        print(f"⚠️  生成失败：{e}")
-        return None, ""
-    data = extract_json(raw)
-    if not isinstance(data, dict):
-        print(f"⚠️  模型输出无法解析为 JSON，原文：\n{raw[:300]}")
-        return None, raw
-    return data, raw
+def save(state, folder):
+    write_json(folder / 'state.json', state)
+    sections = [f"《{state['title']}》", state['opening']]
+    for scene in state['accepted']:
+        sections.append(f"第{scene['number']}场：{scene['card']['title']}\n\n{scene['text']}")
+    write_text(folder / 'manuscript.txt', '\n\n'.join(sections) + '\n')
 
 
-def compress_if_needed(state, llm):
-    """未压缩正文过长时，把旧正文折进「叙事体摘要」；正文本身一字不删。"""
-    man = state.get("manuscript", "")
-    summarized = state.get("summarized_len", 0)
-    unsummarized = man[summarized:]
-    if len(unsummarized) <= SUMMARIZE_AT_CHARS:
-        return
-    fold = unsummarized[: len(unsummarized) - RECENT_CHARS]
-    if not fold:
-        return
-    prompt = f"""【既有摘要】
-{state.get('summary') or '（无）'}
-
-【新增正文】
-{fold}"""
-    messages = [("system", SUMMARY_SYSTEM), ("human", prompt)]
-    try:
-        raw = llm.invoke(messages).content
-        state["summary"] = raw.strip()
-        state["summarized_len"] = summarized + len(fold)
-        print(f"🧠 已将 {len(fold)} 字旧正文压缩进叙事摘要（正文共 {len(man)} 字，未删任何内容）。")
-    except Exception as e:
-        print(f"⚠️  摘要生成失败：{e}")
-
-
-def print_state(state):
-    tail = "｜已有摘要" if state.get("summary") else ""
-    print(f"📖 《{state['title']}》  人物：{'、'.join(names(state))}  正文 {len(state.get('manuscript', ''))} 字{tail}")
+def run(client, folder, cfg=None, max_revisions=2, source='ollama'):
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    if (folder / 'state.json').exists():
+        state = read_json(folder / 'state.json')
+        require(state['source'] == source, '续跑不可混用示例回放和真实生成')
+    else:
+        require(isinstance(cfg, dict) and bool(cfg.get('characters')), '配置缺少人物')
+        opening = cfg.get('opening') or cfg.get('manuscript') or ''
+        require(nonempty(opening), '配置缺少开场')
+        state = {'version': 2, 'source': source, 'title': cfg.get('title', '未命名'),
+                 'characters': cfg['characters'], 'opening': opening, 'plan': None,
+                 'memory': None, 'accepted': [], 'status': 'planning'}
+        save(state, folder)
+    if state['status'] == 'complete':
+        save(state, folder)
+        return state
+    if state['plan'] is None:
+        print('规划三场与结局……', flush=True)
+        plan = ask(client, folder, 'plan', 'plan', PLAN_SYSTEM,
+                   {'characters': state['characters'], 'opening': state['opening']}, True,
+                   lambda p: validate_plan(p, state['characters']))
+        state['plan'], state['memory'] = plan, plan['initial_memory']
+        write_json(folder / 'plan.json', plan)
+        save(state, folder)
+    for index in range(len(state['accepted']), 3):
+        card = state['plan']['scenes'][index]
+        # 三场短篇使用全部已接受正文，不截断中间历史。
+        context = {'characters': state['characters'], 'plan': state['plan'], 'opening': state['opening'],
+                   'accepted_text': [s['text'] for s in state['accepted']], 'memory': state['memory'],
+                   'card': card, 'scene_number': index + 1, 'final_scene': index == 2}
+        issues, draft = [], ''
+        for revision in range(max_revisions + 1):
+            label = f'scene_{index + 1}_v{revision + 1}'
+            print(f"第{index + 1}场《{card['title']}》：写作/修改 {revision + 1}……", flush=True)
+            draft = ask(client, folder, label + '_draft', 'write', WRITE_SYSTEM,
+                        dict(context, previous_draft=draft, revision_notes=issues), False,
+                        lambda x: require(nonempty(x), '正文为空'))
+            print('  检查场景变化、连续性与收束……', flush=True)
+            review = ask(client, folder, label + '_review', 'review', REVIEW_SYSTEM,
+                         dict(context, draft=draft), True, lambda r: validate_review(r, index == 2))
+            write_json(folder / f'{label}_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")}_review.json', review)
+            if review['approved']:
+                state['accepted'].append({'number': index + 1, 'card': card, 'text': draft, 'review': review})
+                state['memory'] = review['memory']
+                state['status'] = 'complete' if index == 2 else 'writing'
+                save(state, folder)
+                break
+            issues = review['issues']
+            print('  需要修改：' + '；'.join(issues), flush=True)
+        else:
+            state['status'] = 'needs_revision'
+            save(state, folder)
+            raise RuntimeError(f'第{index + 1}场审核未通过，草稿已保存，未计入正文；可--resume续跑')
+    return state
 
 
 def main():
-    cfg = load_config()
-    if not cfg.get("characters"):
-        print("⚠️  角色配置里没有 characters，请先编辑 story_state.json。")
-        return
-    run_dir, state = init_run(cfg)
-
-    summary_llm = build_llm(format_json=False)
-    director_llm = build_llm(format_json=True, repeat_penalty=config.LLM_REPEAT_PENALTY)
-
-    print_state(state)
-    print(f"📁 本次输出目录：{run_dir}")
-    print("✅ 就绪！回车继续（下一个角色由模型决定），输入 /help 看命令。\n")
-
-    ns = names(state)
-    current = state.get("current") if state.get("current") in ns else ns[0]
-    print(f"🎬 当前出场角色：{current}（可用 /next 名字 换）")
-
-    while True:
-        try:
-            cmd = input("⏎ 回车继续 / 命令：").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n👋 已保存，再见！")
-            save_state(state, run_dir)
-            break
-
-        if cmd in ("/exit", "/quit", "/q"):
-            save_state(state, run_dir)
-            print(f"👋 已保存，正文见 {os.path.join(run_dir, 'manuscript.txt')}。再见！")
-            break
-        if cmd == "/help":
-            print("命令：（回车）继续 · /next 名字 · /scene 描述 · /characters · /manuscript · /save · /exit")
-            continue
-        if cmd in ("/characters", "/c"):
-            print("👥 人物卡：\n" + persona_lines(state))
-            continue
-        if cmd in ("/manuscript", "/m", "/novel"):
-            print("📜 当前正文：\n\n" + state.get("manuscript", ""))
-            continue
-        if cmd == "/save":
-            save_state(state, run_dir)
-            print(f"💾 已保存，正文见 {os.path.join(run_dir, 'manuscript.txt')}。")
-            continue
-        if cmd.startswith("/next"):
-            name = cmd[len("/next"):].strip()
-            if name not in ns:
-                print(f"⚠️  没有这个角色，可用：{'、'.join(ns)}")
-                continue
-            current = name
-            state["current"] = current
-        elif cmd.startswith("/scene"):
-            text = cmd[len("/scene"):].strip()
-            if not text:
-                print("用法：/scene 一段旁白描述")
-                continue
-            state["manuscript"] = state.get("manuscript", "") + text.strip() + "\n\n"
-            save_state(state, run_dir)
-            print(f"🎬 已插入旁白：{text}")
-            continue
-        elif cmd:
-            print("未知命令，输入 /help 查看。")
-            continue
-
-        # ---- 生成「旁白推进 + 当前角色反应」这一小段 ----
-        print(f"✍️  轮到【{current}】……", flush=True)
-        data, raw = generate_turn(state, current, director_llm)
-        if data is None:
-            current = fallback_next(state, current)
-            state["current"] = current
-            save_state(state, run_dir)
-            continue
-
-        speaker = data.get("character")
-        if speaker not in ns:
-            speaker = current
-        narrator = (data.get("narrator") or "").strip()
-        text = (data.get("text") or "").strip()
-        if not text:
-            print(f"⚠️  模型返回了空 text（原文：{raw[:300]}）")
-            text = "（沉默）"
-
-        man = state.get("manuscript", "")
-        if narrator:
-            man += narrator.strip() + "\n\n"
-            print(f"📝 旁白：{narrator}")
-        man += text.strip() + "\n\n"
-        state["manuscript"] = man
-        print(f"【{speaker}】{text}\n")
-
-        # ---- 判断下一个角色 ----
-        nxt = data.get("next")
-        if nxt in ns and nxt != speaker:
-            current = nxt
-        elif nxt == speaker:
-            current = fallback_next(state, speaker)
-            print(f"⚠️  模型让 {speaker} 连续出场，已强制换到 {current}。")
-        else:
-            current = fallback_next(state, speaker)
-            if nxt:
-                print(f"⚠️  模型给出的 next「{nxt}」不合法，已回退到 {current}。")
-
-        state["current"] = current
-        save_state(state, run_dir)
-        compress_if_needed(state, summary_llm)
-        save_state(state, run_dir)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, default=BASE / 'story_state.json')
+    parser.add_argument('--resume', type=Path, help='继续已有runs子目录')
+    parser.add_argument('--output', type=Path, help='新建输出目录（必须不存在）')
+    parser.add_argument('--model', default=config.LLM_MODEL)
+    parser.add_argument('--base-url', default=config.OLLAMA_BASE_URL)
+    parser.add_argument('--timeout', type=int, default=300)
+    parser.add_argument('--max-revisions', type=int, default=2)
+    parser.add_argument('--replay', type=Path, help='离线样稿回放，仅验证流程，不调用模型')
+    args = parser.parse_args()
+    require(args.max_revisions >= 0 and args.timeout > 0, '次数不能为负，超时必须为正')
+    require(not (args.resume and args.output), '--resume与--output不能同时使用')
+    if args.resume:
+        require((args.resume / 'state.json').is_file(), '续跑目录中没有state.json')
+    folder = args.resume or args.output or BASE / 'runs' / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    if not args.resume:
+        folder.mkdir(parents=True, exist_ok=False)
+    source = 'replay' if args.replay else 'ollama'
+    if args.replay:
+        print('离线示例回放：使用预写样稿和审核记录，不代表真实模型生成或审核。', flush=True)
+    client = Replay(args.replay) if args.replay else Ollama(args.model, args.base_url, args.timeout)
+    print(f'输出目录：{folder}', flush=True)
+    try:
+        state = run(client, folder, None if args.resume else read_json(args.config), args.max_revisions, source)
+    except Exception as exc:
+        print(f'停止：{exc}\n已接受正文与进度保存在 {folder}。', flush=True)
+        return 1
+    print(f"已完成 {len(state['accepted'])}/3 场：{folder / 'manuscript.txt'}", flush=True)
+    return 0
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    raise SystemExit(main())

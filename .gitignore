@@ -3,3 +3,5 @@ novels/*
 .vscode/*
 chroma_db/*
 runs/*
+__pycache__/
+*.pyc
