@@ -15,7 +15,7 @@ os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
 os.environ["no_proxy"] = "127.0.0.1,localhost,::1"
 
 # ================= 2. Ollama 连接 =================
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_BASE_URL = os.environ.get("WRITER_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 os.environ.setdefault("OLLAMA_HOST", OLLAMA_BASE_URL)
 
 # ================= 3. 模型 =================
@@ -37,6 +37,6 @@ EMBED_BATCH = 200         # 每批向量化多少片段（分批是为了显示�
 
 # ================= 6. 对话生成参数 =================
 LLM_NUM_CTX = 8192        # 上下文长度（放得下检索片段 + 你的问题）
-STORY_NUM_CTX = 16384     # 三场短篇：开场、完整已接受场景、场景卡与审核上下文
+STORY_NUM_CTX = 8192     # 三场短篇：开场、完整已接受场景、场景卡与审核上下文
 LLM_TEMPERATURE = 0.8     # 温度：文学创作适当调高，更有想象力；想更严谨可降到 0.3
 LLM_REPEAT_PENALTY = 1.2  # 重复惩罚（>1 抑制模型复读同一句，防互动小说车轱辘话）

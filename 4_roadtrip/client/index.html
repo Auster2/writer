@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#183f3d"><title>雨季旧公路 · 旅途手记</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<div class="app-shell">
+<aside class="route-panel">
+  <a class="brand" href="/" aria-label="旅途手记首页"><span class="brand-mark">↗</span><span>旧路手记<small>THE LONG WAY HOME</small></span></a>
+  <div class="side-caption">你的路线 <span id="route-count">00 / 03</span></div>
+  <nav id="routes" aria-label="旅途路线"></nav>
+  <div class="side-bottom"><div class="mileage">往海边，再慢一点。</div><p>有些地方值得停留，<br>有些话可以留在路上。</p><button id="world-button" class="text-button">阅读这个世界 ↗</button></div>
+  <div class="side-footer"><span class="online-dot"></span><span id="mode-label">离线示例</span><button id="settings-button" aria-label="打开模型设置">⚙ 设置</button></div>
+</aside>
+<main class="main-panel">
+<header class="topbar"><span>公路旅行档案 <b> / </b> 第一卷</span><div><span id="save-status">尚未出发</span><button id="world-top" class="quiet-button">世界观</button><button id="settings-top" class="quiet-button" aria-label="模型与连接设置">⚙</button><button id="new-button" class="quiet-button">新的旅程 ↗</button></div></header>
+<section class="hero">
+  <div class="hero-copy"><span class="eyebrow">A ROAD TRIP IN THE RAIN</span><h1>雨季旧公路<span>沿途，都是未完待续。</span></h1><p>一辆旧车，一封迟到二十年的信。<br>去海边的路上，你可以不那么着急。</p><div class="hero-tags"><span id="day-label">启程之前</span><span id="weather-label">雨季 · 沿海旧路</span></div></div>
+  <svg class="landscape" viewBox="0 0 520 260" role="img" aria-label="穿过雨雾山谷通往海边的旧公路"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#bfd0c7"/><stop offset="1" stop-color="#e7e5d6"/></linearGradient></defs><path fill="url(#sky)" d="M0 0h520v260H0z"/><circle cx="404" cy="68" r="30" fill="#efead7"/><path d="M0 160 105 64 185 131 280 58 412 148 520 99V260H0" fill="#98b1a7"/><path d="m0 192 125-75 77 57 113-67 118 80 87-33v106H0" fill="#638e81"/><path d="m0 229 86-64 140 59 151-75 143 65v46H0" fill="#38675c"/><path d="M234 260c70-35 170-49 117-76-22-12-79-7-54-24 12-8 30-12 43-15-13 8-25 13-21 17 7 9 67 8 74 30 9 26-76 40-99 68" fill="#ddd8be"/><path d="M267 260c42-25 148-55 106-72-21-9-72-14-59-26" fill="none" stroke="#a7a68c" stroke-width="2" stroke-dasharray="9 8"/><g fill="#224f45"><path d="m60 176 12-31 12 31h-8v24h-8v-24zM447 172l10-26 10 26h-7v22h-6v-22z"/></g><g fill="#edbf72"><path d="m341 219 21-5 8 13-24 7z"/><path d="m345 214 2-8 10-3 5 11z"/></g><path d="M18 30l-5 12m51-24-5 12m58 0-5 12m72-27-5 12m79 0-5 12m66-13-5 12M464 24l-5 12" stroke="#fff" opacity=".35" stroke-width="2"/></svg>
+</section>
+<div class="content-layout">
+<section class="story-column">
+  <div class="section-heading"><div><span class="eyebrow" id="chapter-label">PROLOGUE</span><h2 id="place-title">出发之前</h2></div><span id="chapter-status" class="stamp">三站，一段旅程</span></div>
+  <section id="welcome" class="welcome-card"><span class="tiny-label">你的故事，从这里开始</span><h3>把信送到海角灯塔。</h3><p>父亲留下的工具箱里，藏着一封没寄出的信。收件人叫林澜，地址是海角灯塔。你把信放好，发动了那辆有点漏雨的旧车。</p><p>这一路，你可以听人讲故事，查找留下的细节，或只是喝一杯茶，再继续上路。</p><button id="start-button" class="primary-button">发动引擎，前往雾桥驿 <span>↗</span></button><p class="hint" id="welcome-mode">当前为离线示例：无需模型即可体验三站；自由对话由示例规则回应。可在设置里连接 Ollama。</p></section>
+  <div id="timeline" aria-live="polite" aria-relevant="additions"></div>
+  <section id="draft" class="draft-card" hidden><span class="tiny-label">正在生成 · 尚未保存</span><p id="draft-text"></p></section>
+  <section id="action-panel" hidden><div class="action-caption">接下来，你想做什么？</div><div id="actions" class="action-grid"></div><div id="local-task" class="local-task"></div><button id="resolve-button" class="resolve-button" hidden></button></section>
+  <div id="status-bar" class="status-bar" role="status" hidden><span class="spinner"></span><span id="status-text"></span><button id="cancel-button">取消</button></div>
+  <div id="error" class="error-message" role="alert" hidden></div>
+  <form id="chat-form" class="chat-box" hidden><div class="chat-to">正在与 <select id="npc-select" aria-label="选择交谈人物"></select> 交谈 <span>只有对方记得这次谈话</span></div><div class="input-row"><textarea id="message" rows="2" maxlength="1500" placeholder="问一问这里的事，或者说说你的来意…" aria-label="对话内容"></textarea><button id="send-button" type="submit" aria-label="发送对话">↑</button></div><div class="input-hint">Enter 发送 · Shift + Enter 换行<span>你随时可以继续上路</span></div></form>
+  <div id="ending" class="ending-card" hidden>这段旅程已经写进手记。你可以回看沿途记录，或带着新的心情重新出发。</div>
+  <footer class="page-footer">不必抵达每一个答案。<span>RAIN ROAD JOURNAL · 01</span></footer>
+</section>
+<aside class="notes-panel"><div class="notes-title"><span>旅途里的事</span><span>✧</span></div><section class="letter-note"><span class="tiny-label">随身携带</span><h3>一封没有拆开的信</h3><p>收件人：林澜<br>目的地：海角灯塔</p><span class="letter-seal">迟到的信，也有抵达的一天。</span></section><section><h3 class="note-heading">遇见的人 <span id="npc-count">00</span></h3><div id="people" class="people-list"><p class="muted">上路之后，慢慢认识。</p></div></section><section><h3 class="note-heading">已经确认的事</h3><div id="clues" class="clue-list"><p class="muted">留意物件，也留意别人的话。</p></div></section><section><h3 class="note-heading">沿途手记</h3><div id="notes"><p class="muted">此刻，还是一张白纸。</p></div></section></aside>
+</div>
+</main>
+</div>
+<dialog id="settings-dialog"><form id="settings-form"><div class="dialog-header"><div><span class="eyebrow">YOUR ENGINE</span><h2>模型与连接</h2></div><button type="button" class="close-button" data-close="settings-dialog" aria-label="关闭设置">×</button></div><p class="dialog-intro">界面和存档在这台电脑，模型可以在另一台电脑。</p><label>运行方式<select id="setting-mode"><option value="demo">离线示例 · 不调用 AI</option><option value="ollama">Ollama · AI 生成</option></select></label><label>Ollama 地址<input id="setting-url" type="url" required placeholder="http://172.30.234.17:11434"></label><label>模型名称<input id="setting-model" list="model-list" required placeholder="qwen2.5:7b"><datalist id="model-list"></datalist></label><div class="form-row"><label>上下文<select id="setting-context"><option value="4096">4096 · 较低显存占用</option><option value="8192">8192</option><option value="16384">16384</option></select></label><label>超时（秒）<input id="setting-timeout" type="number" min="15" max="600" required></label></div><p class="hint">切换示例 / AI 模式需要新建旅程。显存紧张时先用 4096 上下文；切换语言不会加快模型推理。</p><div id="connection-result" class="connection-result" role="status"></div><div class="dialog-actions"><button type="button" id="test-button" class="secondary-button">测试连接</button><button class="primary-button" type="submit">保存设置</button></div></form></dialog>
+<dialog id="world-dialog"><div class="dialog-header"><div><span class="eyebrow">THE WORLD AHEAD</span><h2>雨季旧公路</h2></div><button class="close-button" data-close="world-dialog" aria-label="关闭世界观">×</button></div><div id="world-text" class="world-text"></div></dialog>
+<dialog id="new-dialog"><form id="new-form"><div class="dialog-header"><h2>一段新的旅程</h2><button type="button" class="close-button" data-close="new-dialog" aria-label="关闭新建旅程">×</button></div><p class="dialog-intro">沿三站旧路送信。新旅程会替换当前进度，保留上一版本备份。</p><label>你希望带上什么心情？<textarea id="world-extra" rows="4" maxlength="3000" placeholder="可选：例如更温柔一些，多一点生活细节。人物和事件仍遵守雨季旧公路的背景。"></textarea></label><button type="submit" class="primary-button">启程，前往雾桥驿 ↗</button></form></dialog>
+<script type="module" src="/app.js"></script>
+</body></html>

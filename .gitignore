@@ -5,3 +5,22 @@ chroma_db/*
 runs/*
 __pycache__/
 *.pyc
+
+# Generated sample runs and optional sample builder
+/examples/completed_run/
+/examples/build_example.py
+
+# Local environments and credentials
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+
+# Fourth-version local web game
+node_modules/
+/4_roadtrip/data/
+/4_roadtrip/logs/
+/4_roadtrip/dist/
+/4_roadtrip/.npm-cache/

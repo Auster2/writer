@@ -3,6 +3,8 @@ import argparse
 import datetime
 import json
 import os
+import threading
+import time
 from pathlib import Path
 import urllib.request
 import config
@@ -92,24 +94,77 @@ def validate_review(review, final):
         require(bool(issues), '拒绝必须提供修改意见')
 
 
+class IncompleteGeneration(RuntimeError):
+    def __init__(self, message, partial=''):
+        super().__init__(message)
+        self.partial = partial
+
+
 class Ollama:
-    def __init__(self, model, base_url, timeout):
+    def __init__(self, model, base_url, timeout, num_ctx=None):
         self.model, self.base_url, self.timeout = model, base_url.rstrip('/'), timeout
+        self.num_ctx = num_ctx or config.STORY_NUM_CTX
+        # 私有网段也直连，避免系统代理截获局域网请求。
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def complete(self, stage, system, context, structured=False):
-        payload = {'model': self.model, 'stream': False, 'think': False,
+        ctx = min(self.num_ctx, 4096) if stage == 'plan' else self.num_ctx
+        payload = {'model': self.model, 'stream': True, 'think': False,
                    'messages': [{'role': 'system', 'content': system},
                                 {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}],
-                   'options': {'num_ctx': config.STORY_NUM_CTX, 'temperature': 0.25 if structured else config.LLM_TEMPERATURE,
-                               'num_predict': 4096}}
+                   'options': {'num_ctx': ctx, 'temperature': 0.25 if structured else config.LLM_TEMPERATURE,
+                               'num_predict': 2048 if structured else 3072}}
         if structured:
             payload['format'] = 'json'
         request = urllib.request.Request(self.base_url + '/api/chat', data=json.dumps(payload).encode('utf-8'),
                                          headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            text = json.load(response)['message']['content'].strip()
-        require(bool(text), f'{stage}返回空内容')
-        return text
+        started, chunks, thinking = time.monotonic(), [], []
+        stopped = threading.Event()
+
+        def progress():
+            while not stopped.wait(5):
+                count = sum(len(x) for x in chunks)
+                status = f'已收到 {count} 字' if count else '等待加载模型/处理提示词'
+                if thinking:
+                    status += f'，思考 {sum(len(x) for x in thinking)} 字'
+                print(f'  [{stage}] {time.monotonic() - started:.0f}s，{status}', flush=True)
+
+        print(f'  请求 {self.base_url}，模型 {self.model}，上下文 {ctx}，流式接收……', flush=True)
+        worker = threading.Thread(target=progress, daemon=True)
+        worker.start()
+        final = None
+        try:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                for line in response:
+                    if time.monotonic() - started > self.timeout:
+                        raise TimeoutError('本次生成超过时间上限')
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    if item.get('error'):
+                        raise RuntimeError(item['error'])
+                    message = item.get('message') or {}
+                    chunks.append(message.get('content') or '')
+                    if message.get('thinking'):
+                        thinking.append(message['thinking'])
+                    if item.get('done'):
+                        final = item
+                        break
+            text = ''.join(chunks).strip()
+            if final is None:
+                raise RuntimeError('连接结束但未收到完成标记')
+            if final.get('done_reason') == 'length':
+                raise RuntimeError('达到输出长度上限，内容可能不完整')
+            require(bool(text), f'{stage}返回空内容')
+            duration = final.get('eval_duration', 0) / 1e9
+            speed = final.get('eval_count', 0) / duration if duration else 0
+            print(f'  完成：{len(text)} 字，{time.monotonic() - started:.1f}s，生成 {speed:.1f} token/s', flush=True)
+            return text
+        except Exception as exc:
+            raise IncompleteGeneration(str(exc), ''.join(chunks)) from exc
+        finally:
+            stopped.set()
+            worker.join()
 
 
 class Replay:
@@ -129,7 +184,12 @@ class Replay:
 def ask(client, folder, label, stage, system, context, structured, validator):
     label += '_' + datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     for attempt in range(2):
-        raw = client.complete(stage, system, context, structured)
+        try:
+            raw = client.complete(stage, system, context, structured)
+        except IncompleteGeneration as exc:
+            if exc.partial:
+                write_text(folder / f'{label}_partial_{attempt + 1}.txt', exc.partial)
+            raise
         write_text(folder / f'{label}_raw_{attempt + 1}.txt', raw)
         try:
             value = json.loads(raw) if structured else raw
@@ -215,10 +275,11 @@ def main():
     parser.add_argument('--model', default=config.LLM_MODEL)
     parser.add_argument('--base-url', default=config.OLLAMA_BASE_URL)
     parser.add_argument('--timeout', type=int, default=300)
+    parser.add_argument('--num-ctx', type=int, default=config.STORY_NUM_CTX, help='写作/审核上下文；规划最多4096')
     parser.add_argument('--max-revisions', type=int, default=2)
     parser.add_argument('--replay', type=Path, help='离线样稿回放，仅验证流程，不调用模型')
     args = parser.parse_args()
-    require(args.max_revisions >= 0 and args.timeout > 0, '次数不能为负，超时必须为正')
+    require(args.max_revisions >= 0 and args.timeout > 0 and args.num_ctx >= 2048, '次数不能为负，超时必须为正，上下文至少2048')
     require(not (args.resume and args.output), '--resume与--output不能同时使用')
     if args.resume:
         require((args.resume / 'state.json').is_file(), '续跑目录中没有state.json')
@@ -228,7 +289,7 @@ def main():
     source = 'replay' if args.replay else 'ollama'
     if args.replay:
         print('离线示例回放：使用预写样稿和审核记录，不代表真实模型生成或审核。', flush=True)
-    client = Replay(args.replay) if args.replay else Ollama(args.model, args.base_url, args.timeout)
+    client = Replay(args.replay) if args.replay else Ollama(args.model, args.base_url, args.timeout, args.num_ctx)
     print(f'输出目录：{folder}', flush=True)
     try:
         state = run(client, folder, None if args.resume else read_json(args.config), args.max_revisions, source)

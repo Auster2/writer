@@ -50,6 +50,17 @@
    | `/sources` | 显示/隐藏检索到的原文出处 |
    | `/exit` | 退出 |
 
+## 第四版可玩公路冒险
+
+已提供独立的 Node.js + TypeScript 浏览器版本：[启动与玩法说明](4_roadtrip/README.md)。内置世界观为[雨季旧公路](4_roadtrip/presets/世界观.md)，可先在离线示例模式玩完三站，再在界面里配置 Ollama 地址和模型。
+
+```powershell
+cd 4_roadtrip
+npm start
+```
+
+需要 Node.js 24+，浏览器打开 `http://127.0.0.1:4317`。存档、个人连接配置与运行产物均忽略。设计方案见 [4_roadtrip.md](4_roadtrip.md)。
+
 ## 文件说明
 
 | 文件 | 作用 |
@@ -58,6 +69,7 @@
 | `1_build_db.py` | 建库脚本（切分 + 向量化 + 入库） |
 | `2_chat.py` | 交互式 RAG 对话脚本 |
 | `3_story.py` | 三场短篇引擎（规划、整场写作、审核、事实记忆） |
+| [第四版公路冒险设计](4_roadtrip.md) | Node.js 与浏览器界面方案；可玩版本见 `4_roadtrip/` |
 | `story_state.json` | 角色配置：标题 + 人物卡 + 开场（只读，运行中不改动） |
 | `runs/` | 每次运行一个时间戳目录，内含 `state.json` + `manuscript.txt` |
 | `novels/` | 放小说 `.txt` 的地方 |
