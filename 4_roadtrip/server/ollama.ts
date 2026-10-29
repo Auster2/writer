@@ -1,9 +1,9 @@
-import type { Settings, Model, Emit } from '../shared/types.ts';
+import type { Settings, Model, Emit, ChatMessage } from '../shared/types.ts';
 
 export class Ollama implements Model {
   settings: Settings;
   constructor(settings: Settings) { this.settings = settings; }
-  async generate(system: string, input: unknown, json: boolean, signal: AbortSignal, emit: Emit) {
+  async generate(system: string, input: unknown, json: boolean, signal: AbortSignal, emit: Emit, history: ChatMessage[] = []) {
     const combined = AbortSignal.any([signal, AbortSignal.timeout(this.settings.timeout * 1000)]);
     emit({ type: 'status', text: '正在连接模型，首次加载可能较慢…' });
     const timer = setInterval(() => emit({ type: 'status', text: '模型仍在处理，正在等待响应…' }), 8000);
@@ -12,7 +12,7 @@ export class Ollama implements Model {
         method: 'POST', signal: combined, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: this.settings.model, stream: true, think: false,
           ...(json ? { format: 'json' } : {}),
-          messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }],
+          messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: typeof input === 'string' ? input : JSON.stringify(input) }],
           options: { num_ctx: this.settings.context, num_predict: json ? 2300 : 600, temperature: json ? 0.35 : 0.75 } })
       });
       if (!response.ok || !response.body) throw new Error(`Ollama HTTP ${response.status}：${(await response.text()).slice(0, 180)}`);
@@ -25,7 +25,7 @@ export class Ollama implements Model {
         const chunk = item.message?.content || '';
         text += chunk;
         if (text.length > 18000) throw new Error('模型输出过长，请缩短回答或更换模型。');
-        if (chunk) emit(json ? { type: 'status', text: `正在构建地区，已收到 ${text.length} 字…` } : { type: 'delta', text: chunk });
+        if (chunk) emit(json ? { type: 'status', text: `正在整理场景信息，已收到 ${text.length} 字…` } : { type: 'delta', text: chunk });
         if (item.done) {
           if (item.done_reason === 'length') throw new Error('输出达到上限，未保存；请重试或选择更适合结构化输出的模型。');
           done = true;

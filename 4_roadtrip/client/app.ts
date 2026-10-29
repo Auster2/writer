@@ -3,6 +3,7 @@ let state: any = null;
 let settings: any = null;
 let defaultWorld = '';
 let busy = false;
+let inputMode = 'talk';
 let selectedNpc = '';
 let viewIndex: number | null = null;
 let controller: AbortController | null = null;
@@ -16,9 +17,13 @@ function button(label: string, callback: () => void, className = 'action-button'
 function empty(container: HTMLElement, hint: string) { const p = document.createElement('p'); p.className = 'muted'; p.textContent = hint; container.append(p); }
 function viewedRegion() { return state?.completed ? (viewIndex ?? state.region) : state?.region; }
 function currentRegion() { return state?.regions[state.routes[viewedRegion()].id]; }
+function usingMock() { return settings?.model === 'mock-road' || settings?.model === 'mock-road:latest'; }
 function render() {
-  text('mode-label', (state?.mode ?? settings?.mode) === 'ollama' ? 'Ollama · AI 生成' : '离线示例 · 非 AI');
-  text('welcome-mode', settings?.mode === 'ollama' ? `当前使用 ${settings.model}。地区氛围、人物和对话由模型生成；第一次连接可能稍慢。` : '当前为离线示例：无需模型即可体验三站；自由对话由示例规则回应。可在设置里连接 Ollama。');
+  const ai = (state?.mode ?? settings?.mode) === 'ollama';
+  text('mode-label', ai ? (usingMock() ? '本地模拟 · 规则生成' : 'Ollama · AI 生成') : '离线示例 · 非 AI');
+  text('welcome-mode', settings?.mode === 'ollama'
+    ? (usingMock() ? '当前连接本机模拟接口 mock-road。地区、人物和对话按故事规则生成，用来在没有 Ollama 时走完整条旅程。' : `当前使用 ${settings.model}。地区氛围、人物和对话由模型生成；第一次连接可能稍慢。`)
+    : '当前为离线示例：无需模型即可体验三站；自由对话由示例规则回应。没有 Ollama 时，可运行 npm run mock，再在设置里连接。');
   text('route-count', `${String(state?.visitedCount || 0).padStart(2, '0')} / 03`);
   const routes = $('routes'); routes.replaceChildren();
   const routeInfo = state?.routes || [{ name: '雾桥驿', subtitle: '河谷 · 姐妹与修车铺' }, { name: '回声坡', subtitle: '山路 · 最后一场广播' }, { name: '海角镇', subtitle: '海边 · 迟到的信' }];
@@ -62,14 +67,15 @@ function render() {
     for (const npc of npcs) { const option = document.createElement('option'); option.value = npc.id; option.textContent = npc.name; select.append(option); }
     select.value = selectedNpc; select.disabled = busy;
     const actions = $('actions'); actions.replaceChildren();
-    for (const item of state.objects) actions.append(button(`${item.found ? '✓' : '⌕'} ${item.name}`, () => act('inspect', { target: item.id }), 'action-button' + (item.found ? ' done' : '')));
     if (state.region < 2) actions.append(button(`继续上路 → ${state.routes[state.region + 1].name}`, () => {
       if (confirm('继续上路？未完成的事情会保留，你也可以回来。')) act('travel', { target: state.routes[state.region + 1].id });
     }));
     else actions.append(button('在海边，结束这段旅程 ↗', () => { if (confirm(state.resolved ? '把这段旅程写成尾声？' : '信还没有送出，也要结束旅程吗？尾声会如实记录。')) act('end'); }));
-    text('local-task', state.resolved ? '你已经在这里留下了一点改变，可以继续聊聊，或者上路。' : state.task);
-    $('resolve-button').hidden = !state.ready || state.resolved || state.completed;
-    text('resolve-button', `↗ ${state.task}`);
+    text('input-context', state.mode === 'demo' ? '离线示例只验证流程；要测试自然对话，请在设置里启用 Ollama 并新建旅程。' : usingMock() ? '正在使用本地模拟接口。可以闲聊，也可以描述行动。' : `正在使用 ${settings.model} · 可以闲聊，不必追着事件走。`);
+    $<HTMLSelectElement>('input-mode').value = inputMode;
+    $<HTMLSelectElement>('input-mode').disabled = busy;
+    $('talk-target').hidden = inputMode !== 'talk';
+    $<HTMLTextAreaElement>('message').placeholder = inputMode === 'talk' ? '想说什么，直接说就好…' : '描述你想做的事，例如：我看看墙上贴着什么。';
     $<HTMLTextAreaElement>('message').disabled = busy;
     $<HTMLButtonElement>('send-button').disabled = busy;
   }
@@ -132,7 +138,7 @@ async function act(type: string, input: any = {}) {
     }
     buffer += decoder.decode(); if (buffer.trim()) accept(buffer);
     if (!committed) throw new Error('连接结束但没有收到保存确认，请刷新确认进度。');
-    if (type === 'talk') $<HTMLTextAreaElement>('message').value = '';
+    if (type === 'talk' || type === 'explore') $<HTMLTextAreaElement>('message').value = '';
   } catch (e: any) {
     controller?.abort();
     error(e.name === 'AbortError' ? '已取消。未完成的内容不会计入旅程；正在同步最后保存的进度。' : e.message);
@@ -160,10 +166,10 @@ $('world-top').onclick = () => $<HTMLDialogElement>('world-dialog').showModal();
 $('new-button').onclick = () => $<HTMLDialogElement>('new-dialog').showModal();
 $('start-button').onclick = () => act('new');
 $('new-form').onsubmit = e => { e.preventDefault(); const world = $<HTMLTextAreaElement>('world-extra').value; $<HTMLDialogElement>('new-dialog').close(); act('new', { world }); };
-$('resolve-button').onclick = () => act('resolve');
+$('input-mode').onchange = () => { inputMode = $<HTMLSelectElement>('input-mode').value; render(); $<HTMLTextAreaElement>('message').focus(); };
 $('cancel-button').onclick = () => controller?.abort();
 $('npc-select').onchange = () => { selectedNpc = $<HTMLSelectElement>('npc-select').value; };
-$('chat-form').onsubmit = e => { e.preventDefault(); const value = $<HTMLTextAreaElement>('message').value.trim(); if (value) act('talk', { target: selectedNpc, text: value }); };
+$('chat-form').onsubmit = e => { e.preventDefault(); const value = $<HTMLTextAreaElement>('message').value.trim(); if (value) act(inputMode, { target: selectedNpc, text: value }); };
 $('message').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $<HTMLFormElement>('chat-form').requestSubmit(); } };
 $('settings-form').onsubmit = async e => {
   e.preventDefault();
